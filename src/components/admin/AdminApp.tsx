@@ -20,7 +20,7 @@ const SECTION_LABELS: Record<HomeSectionKey, string> = {
 };
 
 export function AdminApp() {
-  const { user } = useAuth();
+  const { user, ready } = useAuth();
   const { locale } = useLocale();
   const router = useRouter();
   const [data, setData] = useState<SiteContent | null>(null);
@@ -29,12 +29,16 @@ export function AdminApp() {
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
-    if (user === null) router.replace(href(locale, "/login"));
-  }, [user, router, locale]);
+    if (ready && user === null) router.replace(href(locale, "/login"));
+  }, [ready, user, router, locale]);
 
   useEffect(() => {
-    fetch("/api/admin/content").then((r) => r.json()).then(setData).catch(() => setStatus("error"));
-  }, []);
+    if (!ready || user?.role !== "admin") return;
+    fetch("/api/admin/content", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then(setData)
+      .catch(() => setStatus("error"));
+  }, [ready, user]);
 
   const update = useCallback((patch: Partial<SiteContent>) => {
     setData((d) => (d ? { ...d, ...patch } : d));

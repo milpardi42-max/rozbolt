@@ -90,6 +90,8 @@ export interface User {
 }
 interface AuthCtx {
   user: User | null;
+  /** false until the server session has been checked (avoid redirecting admins prematurely) */
+  ready: boolean;
   login: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   signup: (name: string, email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   logout: () => void;
@@ -205,25 +207,50 @@ export function AppProviders({ locale, children }: { locale: Locale; children: R
     };
   }, [favArr, setFavArr]);
 
-  /* auth */
-  const [user, setUser] = useLocalState<User | null>("ra-user", null);
+  /* auth — server session (HttpOnly cookie) for admins, local session for regular users */
+  const [localUser, setLocalUser] = useLocalState<User | null>("ra-user", null);
+  const [serverUser, setServerUser] = useState<User | null | undefined>(undefined);
+  useEffect(() => {
+    fetch("/api/auth/me", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d: { user: User | null }) => setServerUser(d.user))
+      .catch(() => setServerUser(null));
+  }, []);
+  const user = serverUser === undefined ? (localUser?.role === "admin" ? null : localUser) : (serverUser ?? (localUser?.role === "admin" ? null : localUser));
   const authValue = useMemo<AuthCtx>(
     () => ({
       user,
+      ready: serverUser !== undefined,
       login: async (email, password) => {
         if (!email.includes("@") || password.length < 4) return { ok: false, error: "invalid" };
-        const role = email.startsWith("admin@") ? "admin" : "user";
-        setUser({ name: email.split("@")[0], email, role });
+        // Try a real admin session first
+        try {
+          const r = await fetch("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password }) });
+          const d = (await r.json()) as { ok: boolean; user?: User; error?: string };
+          if (r.ok && d.ok && d.user) {
+            setServerUser(d.user);
+            return { ok: true };
+          }
+          if (email.toLowerCase().startsWith("admin@")) return { ok: false, error: d.error ?? "invalid" };
+        } catch {
+          if (email.toLowerCase().startsWith("admin@")) return { ok: false, error: "network" };
+        }
+        // Regular customer session (local-first; wire to your user backend later)
+        setLocalUser({ name: email.split("@")[0], email, role: "user" });
         return { ok: true };
       },
       signup: async (name, email, password) => {
         if (!name || !email.includes("@") || password.length < 4) return { ok: false, error: "invalid" };
-        setUser({ name, email, role: "user" });
+        setLocalUser({ name, email, role: "user" });
         return { ok: true };
       },
-      logout: () => setUser(null),
+      logout: () => {
+        setLocalUser(null);
+        setServerUser(null);
+        fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+      },
     }),
-    [user, setUser],
+    [user, serverUser, setLocalUser],
   );
 
   /* search */

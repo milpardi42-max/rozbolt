@@ -54,7 +54,33 @@ public/
 
 ## Admin
 
-Sign in at `/{locale}/login` with any `admin@…` email (≥4-char password) → `/{locale}/admin`.
+Sign in at `/{locale}/login` with the admin account → `/{locale}/admin`.
 Manage: homepage sections (order/visibility), hero, categories/styles, pattern/product/artist/
-portfolio/education flags & ordering, banners, SEO. Saves to `data/content.json` (git-ignored).
-Swap `src/lib/data/store.ts` for a DB/API without touching the UI.
+portfolio/education flags & ordering, banners, SEO. Every save is live immediately (all pages are dynamic).
+
+- **Auth**: server-side, HMAC-signed HttpOnly cookie (`src/lib/auth.ts`, `/api/auth/*`).
+  - Production: set `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `AUTH_SECRET`.
+  - Local dev without env vars: any `admin@…` email + ≥4-char password.
+- **Storage** (`src/lib/data/store.ts`, first configured wins):
+  1. Upstash Redis — `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`
+  2. Vercel Blob — `BLOB_READ_WRITE_TOKEN`
+  3. Local file — `data/content.json` (dev / VPS / Docker volume)
+
+## Deploy (Vercel, ~5 minutes)
+
+1. **vercel.com/new** → sign in with GitHub → Import `milpardi42-max/rozbolt`.
+2. Framework is auto-detected (Next.js). Leave build settings as-is.
+3. **Environment Variables** — add:
+   `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `AUTH_SECRET` (any long random string).
+4. Click **Deploy** → you get `https://<project>.vercel.app`.
+5. **Make admin edits persistent** (Vercel's filesystem is read-only, so pick one):
+   - Project → **Storage** → **Create → Upstash Redis** (free) → Connect to project → **Redeploy**; or
+   - Project → **Storage** → **Create → Blob** → Connect → **Redeploy**.
+6. Optional: **Settings → Domains** → add your own domain.
+
+Every push to the connected branch redeploys automatically. Copy `.env.example` to `.env.local` for local runs.
+
+### Other hosts (VPS / Docker / Liara / etc.)
+
+`npm ci && npm run build && npm start` on Node 20+. Set the same env vars; without Redis/Blob, content persists
+to `data/content.json` — keep that directory on a persistent volume.

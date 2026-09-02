@@ -24,14 +24,18 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
       ? await login(String(fd.get("email")), String(fd.get("password")))
       : await signup(String(fd.get("name")), String(fd.get("email")), String(fd.get("password")));
     setBusy(false);
-    if (!r.ok) return setErr(fa ? "اطلاعات وارد شده معتبر نیست." : "Please check your details.");
-    router.push(href(locale, "/account"));
+    if (!r.ok) {
+      if (r.error === "admin_not_configured") return setErr(fa ? "حساب مدیر روی سرور پیکربندی نشده است (ADMIN_EMAIL / ADMIN_PASSWORD)." : "Admin account is not configured on the server (ADMIN_EMAIL / ADMIN_PASSWORD).");
+      return setErr(fa ? "اطلاعات وارد شده معتبر نیست." : "Please check your details.");
+    }
+    const email = String(fd.get("email")).toLowerCase();
+    router.push(href(locale, mode === "login" && email.startsWith("admin@") ? "/admin" : "/account"));
   };
 
   return (
     <form onSubmit={submit} className="space-y-4" noValidate>
       {mode === "signup" && <Field label={dict.common.name}><Input name="name" required autoComplete="name" /></Field>}
-      <Field label={dict.common.email} hint={mode === "login" ? (fa ? "برای ورود به مدیریت: admin@rosieatelier.com" : "For admin access: admin@rosieatelier.com") : undefined}><Input name="email" type="email" required dir="ltr" autoComplete="email" /></Field>
+      <Field label={dict.common.email} hint={mode === "login" ? (fa ? "مدیران با ایمیل مدیریت وارد شوند." : "Admins: sign in with the admin email.") : undefined}><Input name="email" type="email" required dir="ltr" autoComplete="email" /></Field>
       <Field label={dict.common.password}><Input name="password" type="password" required dir="ltr" minLength={4} autoComplete={mode === "login" ? "current-password" : "new-password"} /></Field>
       {err && <p role="alert" className="text-sm text-error">{err}</p>}
       <Button type="submit" size="lg" className="w-full" disabled={busy}>{mode === "login" ? dict.nav.login : dict.nav.signup}</Button>
