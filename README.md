@@ -61,6 +61,12 @@ portfolio/education flags & ordering, banners, SEO. Every save is live immediate
 - **Auth**: server-side, HMAC-signed HttpOnly cookie (`src/lib/auth.ts`, `/api/auth/*`).
   - Production: set `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `AUTH_SECRET`.
   - Local dev without env vars: any `admin@…` email + ≥4-char password.
+  - **Never cached**: `/api/auth/*` and `/api/admin/content` answer with `cache-control: private,
+    no-store` + `netlify-cdn-cache-control: no-store` (`src/lib/http.ts`), and the browser sends them
+    with `credentials: "same-origin"`. A replayed stale `/api/auth/me` would report "logged out"
+    right after login and bounce the admin back to `/login`. `AppProviders` additionally guards the
+    session with a version counter (`sessionVersionRef`): a `/me` answer that is older than the
+    `login()`/`logout()` that raced it is dropped instead of overwriting the fresh session.
 - **Storage** (`src/lib/data/store.ts`, first configured wins):
   1. Upstash Redis — `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`
   2. Vercel Blob — `BLOB_READ_WRITE_TOKEN`

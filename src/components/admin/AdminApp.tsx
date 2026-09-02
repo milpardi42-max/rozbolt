@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/Button";
 import { Field, Input, Select, Textarea } from "@/components/ui/Input";
 import { ErrorState, Skeleton, SuccessState } from "@/components/ui/States";
 import { Badge } from "@/components/ui/Badge";
+import { SESSION_FETCH } from "@/lib/http";
 import { cn, href, slugify, t } from "@/lib/utils";
 import type { Banner, Category, HeroContent, HomeSectionKey, SeoMeta, SiteContent } from "@/lib/types";
 import type { Localized } from "@/lib/i18n/types";
@@ -19,6 +20,25 @@ const SECTION_LABELS: Record<HomeSectionKey, string> = {
   hero: "Hero", discovery: "Pattern Discovery", trending: "Trending Patterns", bestSellers: "Best Sellers", newPatterns: "New Patterns", artists: "Featured Artists", portfolios: "Featured Portfolios", styles: "Browse by Style", spaces: "Browse by Space", exclusive: "Exclusive Collection", projects: "Featured Projects", education: "Academy", b2b: "B2B", custom: "Custom Production", stories: "Artist Stories", newsletter: "Newsletter",
 };
 
+/** Grace period before an unauthenticated admin is sent to /login (ms). */
+const REDIRECT_GRACE_MS = 300;
+
+/** The API answered 401 — the session is gone. Surfaced as a message, never as a redirect. */
+class UnauthorizedError extends Error {
+  constructor() {
+    super("unauthorized");
+    this.name = "UnauthorizedError";
+  }
+}
+
+/** Session-aware call to the admin API: cookies attached, nothing cached, 401 made explicit. */
+async function adminFetch<T>(init?: RequestInit): Promise<T> {
+  const r = await fetch("/api/admin/content", { ...SESSION_FETCH, ...init });
+  if (r.status === 401) throw new UnauthorizedError();
+  if (!r.ok) throw new Error(`admin/content → ${r.status}`);
+  return (await r.json()) as T;
+}
+
 export function AdminApp() {
   const { user, ready } = useAuth();
   const { locale } = useLocale();
@@ -27,18 +47,33 @@ export function AdminApp() {
   const [section, setSection] = useState<Section>("home");
   const [status, setStatus] = useState<"idle" | "saving" | "ok" | "error">("idle");
   const [dirty, setDirty] = useState(false);
+  /** why the content is missing: a rejected session vs. a transport/5xx failure */
+  const [loadError, setLoadError] = useState<"unauthorized" | "error" | null>(null);
 
+  const load = useCallback(async (signal?: AbortSignal) => {
+    setLoadError(null);
+    try {
+      setData(await adminFetch<SiteContent>({ signal }));
+    } catch (e) {
+      if (signal?.aborted) return;
+      setLoadError(e instanceof UnauthorizedError ? "unauthorized" : "error");
+    }
+  }, []);
+
+  // Send a logged-out admin to /login only once the session check has settled (`ready`) and only
+  // after a grace period, so a late /api/auth/me answer can never flash-redirect a signed-in admin.
   useEffect(() => {
-    if (ready && user === null) router.replace(href(locale, "/login"));
-  }, [ready, user, router, locale]);
+    if (!ready || user !== null || loadError === "unauthorized") return;
+    const id = window.setTimeout(() => router.replace(href(locale, "/login")), REDIRECT_GRACE_MS);
+    return () => window.clearTimeout(id);
+  }, [ready, user, loadError, router, locale]);
 
   useEffect(() => {
     if (!ready || user?.role !== "admin") return;
-    fetch("/api/admin/content", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then(setData)
-      .catch(() => setStatus("error"));
-  }, [ready, user]);
+    const ac = new AbortController();
+    void load(ac.signal);
+    return () => ac.abort();
+  }, [ready, user, load]);
 
   const update = useCallback((patch: Partial<SiteContent>) => {
     setData((d) => (d ? { ...d, ...patch } : d));
@@ -48,21 +83,33 @@ export function AdminApp() {
   const save = async () => {
     if (!data) return;
     setStatus("saving");
-    const r = await fetch("/api/admin/content", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(data) });
-    setStatus(r.ok ? "ok" : "error");
-    if (r.ok) {
+    try {
+      await adminFetch<{ ok: true }>({ method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(data) });
+      setStatus("ok");
       setDirty(false);
       router.refresh();
       setTimeout(() => setStatus("idle"), 2000);
+    } catch (e) {
+      if (e instanceof UnauthorizedError) {
+        setStatus("idle");
+        setLoadError("unauthorized");
+      } else {
+        setStatus("error");
+      }
     }
   };
   const reset = async () => {
     if (!confirm("Reset all admin overrides to the seed content?")) return;
-    await fetch("/api/admin/content", { method: "DELETE" });
-    const fresh = await fetch("/api/admin/content").then((r) => r.json());
-    setData(fresh);
-    setDirty(false);
-    router.refresh();
+    try {
+      await adminFetch<{ ok: true }>({ method: "DELETE" });
+      setData(await adminFetch<SiteContent>());
+      setDirty(false);
+      setLoadError(null);
+      router.refresh();
+    } catch (e) {
+      if (e instanceof UnauthorizedError) setLoadError("unauthorized");
+      else setStatus("error");
+    }
   };
 
   if (user && user.role !== "admin") {
@@ -103,7 +150,22 @@ export function AdminApp() {
         </nav>
 
         <div className="lg:col-span-9">
-          {!data ? (
+          {loadError === "unauthorized" ? (
+            <div className="space-y-3">
+              {/* 401 = the session was rejected: tell the admin, never hard-redirect them here. */}
+              <ErrorState
+                message="The server answered 401 — your admin session is no longer valid, so nothing was loaded or saved. Sign in again and retry."
+                onRetry={() => void load()}
+              />
+              <p className="text-center text-caption text-muted">
+                <Link href={href(locale, "/login")} className="font-medium text-foreground underline-offset-4 hover:underline">
+                  Go to sign in
+                </Link>
+              </p>
+            </div>
+          ) : loadError === "error" ? (
+            <ErrorState message="Could not reach the admin API. Check your connection and retry." onRetry={() => void load()} />
+          ) : !data ? (
             <div className="space-y-3"><Skeleton className="h-10 w-1/2" /><Skeleton className="h-40" /><Skeleton className="h-40" /></div>
           ) : (
             <div key={section} className="anim-fade-up">

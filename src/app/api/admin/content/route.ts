@@ -1,33 +1,42 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
+import { withNoStore } from "@/lib/http";
 import { getContent, resetContent, saveContent } from "@/lib/data/store";
 import type { SiteContent } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-/** Admin content API — protected by the signed HttpOnly session cookie (see src/lib/auth.ts). */
+/**
+ * Admin content API — protected by the signed HttpOnly session cookie (see src/lib/auth.ts).
+ * Every answer is private + no-store: it is keyed on the session cookie, so it can never be cached
+ * in a shared/edge layer where another (anonymous) visitor — or a logged-out admin — would read it.
+ */
 async function requireAdmin() {
   const user = await getSession();
   return user?.role === "admin" ? user : null;
 }
 
+function unauthorized() {
+  return NextResponse.json({ ok: false, error: "unauthorized" }, withNoStore({ status: 401 }));
+}
+
 export async function GET() {
-  if (!(await requireAdmin())) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
-  return NextResponse.json(await getContent());
+  if (!(await requireAdmin())) return unauthorized();
+  return NextResponse.json(await getContent(), withNoStore());
 }
 
 export async function PUT(req: Request) {
-  if (!(await requireAdmin())) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  if (!(await requireAdmin())) return unauthorized();
   const body = (await req.json().catch(() => null)) as SiteContent | null;
   if (!body || !Array.isArray(body.patterns) || !Array.isArray(body.products)) {
-    return NextResponse.json({ ok: false, error: "invalid_payload" }, { status: 400 });
+    return NextResponse.json({ ok: false, error: "invalid_payload" }, withNoStore({ status: 400 }));
   }
   await saveContent(body);
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true }, withNoStore());
 }
 
 export async function DELETE() {
-  if (!(await requireAdmin())) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  if (!(await requireAdmin())) return unauthorized();
   await resetContent();
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true }, withNoStore());
 }

@@ -1,8 +1,9 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Locale } from "@/lib/i18n/types";
 import { dictionaries, type Dictionary } from "@/lib/i18n/dictionary";
+import { SESSION_FETCH } from "@/lib/http";
 
 /* ------------------------------------------------------------------ */
 /* Locale                                                               */
@@ -210,12 +211,36 @@ export function AppProviders({ locale, children }: { locale: Locale; children: R
   /* auth — server session (HttpOnly cookie) for admins, local session for regular users */
   const [localUser, setLocalUser] = useLocalState<User | null>("ra-user", null);
   const [serverUser, setServerUser] = useState<User | null | undefined>(undefined);
-  useEffect(() => {
-    fetch("/api/auth/me", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((d: { user: User | null }) => setServerUser(d.user))
-      .catch(() => setServerUser(null));
+  /**
+   * Session version counter. Every write we make to the session ourselves (login/logout) bumps it,
+   * so an in-flight /api/auth/me answer that was fired *before* that write is discarded instead of
+   * landing late with the pre-login `{ user: null }` and overwriting the session login() just
+   * created — that race was throwing the admin panel straight back to /login.
+   */
+  const sessionVersionRef = useRef(0);
+  const commitServerUser = useCallback((next: User | null) => {
+    sessionVersionRef.current += 1;
+    setServerUser(next);
   }, []);
+
+  useEffect(() => {
+    const version = sessionVersionRef.current;
+    let active = true;
+    fetch("/api/auth/me", { ...SESSION_FETCH })
+      .then((r) => (r.ok ? (r.json() as Promise<{ user: User | null }>) : Promise.reject(new Error(`auth/me ${r.status}`))))
+      .then((d) => {
+        if (!active || sessionVersionRef.current !== version) return;
+        setServerUser(d.user ?? null);
+      })
+      .catch(() => {
+        if (!active || sessionVersionRef.current !== version) return;
+        setServerUser(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const user = serverUser === undefined ? (localUser?.role === "admin" ? null : localUser) : (serverUser ?? (localUser?.role === "admin" ? null : localUser));
   const authValue = useMemo<AuthCtx>(
     () => ({
@@ -225,10 +250,16 @@ export function AppProviders({ locale, children }: { locale: Locale; children: R
         if (!email.includes("@") || password.length < 4) return { ok: false, error: "invalid" };
         // Try a real admin session first
         try {
-          const r = await fetch("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password }) });
+          const r = await fetch("/api/auth/login", {
+            ...SESSION_FETCH,
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ email, password }),
+          });
           const d = (await r.json()) as { ok: boolean; user?: User; error?: string };
           if (r.ok && d.ok && d.user) {
-            setServerUser(d.user);
+            // Wins over any /api/auth/me still in flight — the cookie now exists, the probe doesn't.
+            commitServerUser(d.user);
             return { ok: true };
           }
           if (email.toLowerCase().startsWith("admin@")) return { ok: false, error: d.error ?? "invalid" };
@@ -246,11 +277,11 @@ export function AppProviders({ locale, children }: { locale: Locale; children: R
       },
       logout: () => {
         setLocalUser(null);
-        setServerUser(null);
-        fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+        commitServerUser(null);
+        fetch("/api/auth/logout", { ...SESSION_FETCH, method: "POST" }).catch(() => undefined);
       },
     }),
-    [user, serverUser, setLocalUser],
+    [user, serverUser, setLocalUser, commitServerUser],
   );
 
   /* search */
